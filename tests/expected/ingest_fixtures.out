@@ -1,0 +1,415 @@
+-- Normalisation of real and synthetic pgBackRest info output.
+\pset null '<null>'
+SET timezone = 'UTC';
+-- each test file starts from a clean extension state (pg_regress shares one database)
+DROP EXTENSION pgbackrest_monitor CASCADE;
+CREATE EXTENSION pgbackrest_monitor;
+\set lab `cat tests/fixtures/info_lab_healthy.json`
+\set perm `cat tests/fixtures/info_lab_repo_permission_denied.json`
+\set expired `cat tests/fixtures/info_lab_after_expire_synthetic.json`
+\set witherr `cat tests/fixtures/info_lab_backup_error_synthetic.json`
+\set legacy `cat tests/fixtures/info_legacy_single_repo_synthetic.json`
+\set running `cat tests/fixtures/info_lab_backup_running_progress_synthetic.json`
+\set empty `cat tests/fixtures/info_empty_no_backups.json`
+\set missing `cat tests/fixtures/info_missing_stanza.json`
+\set allst `cat tests/fixtures/info_all_stanzas.json`
+\set bad1 `cat tests/fixtures/info_invalid_missing_fields_synthetic.json`
+\set bad2 `cat tests/fixtures/info_invalid_no_status_code_synthetic.json`
+SELECT pgbackrest_monitor.register_collector('c1', 'host1', 100, '1.0.0', '2.59.3', '1 minute', ARRAY['lab', 'empty', 'legacy', 'doesnotexist']);
+ register_collector 
+--------------------
+ <null>
+(1 row)
+
+SELECT pgbackrest_monitor.register_stanza('lab'), pgbackrest_monitor.register_stanza('empty'),
+       pgbackrest_monitor.register_stanza('legacy', NULL), pgbackrest_monitor.register_stanza('doesnotexist');
+ register_stanza | register_stanza | register_stanza | register_stanza 
+-----------------+-----------------+-----------------+-----------------
+ <null>          | <null>          | <null>          | <null>
+(1 row)
+
+-- invalid stanza names are refused by the table constraint
+DO $$ BEGIN PERFORM pgbackrest_monitor.register_stanza('bad;name'); EXCEPTION WHEN check_violation THEN RAISE NOTICE 'rejected: %', SQLERRM; END $$;
+NOTICE:  rejected: new row for relation "stanza" violates check constraint "stanza_stanza_name_check"
+DO $$ BEGIN PERFORM pgbackrest_monitor.register_stanza('../etc'); EXCEPTION WHEN check_violation THEN RAISE NOTICE 'rejected: %', SQLERRM; END $$;
+NOTICE:  rejected: new row for relation "stanza" violates check constraint "stanza_stanza_name_check"
+-- 1. healthy multi-repo stanza
+SELECT pgbackrest_monitor.record_run('c1', 'lab', 'info', '2026-10-26 11:30:00+00', '2026-10-26 11:30:02+00', 0, 'success', NULL, :'lab'::jsonb) AS run_id;
+ run_id 
+--------
+      1
+(1 row)
+
+SELECT stanza_name, observed_at, status_code, status_message, cipher, backup_lock_held, restore_lock_held, pgbackrest_version_seen, repo_count, backup_count
+FROM pgbackrest_monitor.stanza_state ORDER BY 1;
+ stanza_name |         observed_at          | status_code | status_message | cipher | backup_lock_held | restore_lock_held | pgbackrest_version_seen | repo_count | backup_count 
+-------------+------------------------------+-------------+----------------+--------+------------------+-------------------+-------------------------+------------+--------------
+ lab         | Mon Oct 26 11:30:02 2026 UTC |           0 | ok             | none   | f                | f                 | 2.59.3                  |          2 |            5
+(1 row)
+
+SELECT stanza_name, repo_key, status_code, status_message, db_id, db_version, db_system_id, archive_id, archive_min, archive_max, has_backup_metadata, has_archive_metadata
+FROM pgbackrest_monitor.repo_state ORDER BY 1, 2;
+ stanza_name | repo_key | status_code | status_message | db_id | db_version |    db_system_id     | archive_id |       archive_min        |       archive_max        | has_backup_metadata | has_archive_metadata 
+-------------+----------+-------------+----------------+-------+------------+---------------------+------------+--------------------------+--------------------------+---------------------+----------------------
+ lab         |        1 |           0 | ok             |     1 | 18         | 7700929778253418706 | 18-1       | 000000010000000000000001 | 000000010000000000000027 | t                   | t
+ lab         |        2 |           0 | ok             |     1 | 18         | 7700929778253418706 | 18-1       | 000000010000000000000001 | 000000010000000000000027 | t                   | t
+(2 rows)
+
+SELECT stanza_name, repo_key, archive_id, db_id, wal_min, wal_max FROM pgbackrest_monitor.archive_state ORDER BY 1, 2, 3;
+ stanza_name | repo_key | archive_id | db_id |         wal_min          |         wal_max          
+-------------+----------+------------+-------+--------------------------+--------------------------
+ lab         |        1 | 18-1       |     1 | 000000010000000000000001 | 000000010000000000000027
+ lab         |        2 | 18-1       |     1 | 000000010000000000000001 | 000000010000000000000027
+(2 rows)
+
+SELECT repo_key, label, backup_type, started_at, stopped_at, duration, wal_start, wal_stop, lsn_start, lsn_stop,
+       database_size, backup_size, repo_set_size, repo_backup_size, prior_label, reference_labels, has_error, backup_status, pgbackrest_version, pgbackrest_format
+FROM pgbackrest_monitor.backup_history WHERE stanza_name = 'lab' ORDER BY stopped_at, repo_key;
+ repo_key |               label               | backup_type |          started_at          |          stopped_at          | duration |        wal_start         |         wal_stop         | lsn_start  |  lsn_stop  | database_size | backup_size | repo_set_size | repo_backup_size |            prior_label            |                                    reference_labels                                    | has_error | backup_status | pgbackrest_version | pgbackrest_format 
+----------+-----------------------------------+-------------+------------------------------+------------------------------+----------+--------------------------+--------------------------+------------+------------+---------------+-------------+---------------+------------------+-----------------------------------+----------------------------------------------------------------------------------------+-----------+---------------+--------------------+-------------------
+        1 | 20261026-110039F                  | full        | Mon Oct 26 11:00:39 2026 UTC | Mon Oct 26 11:00:42 2026 UTC | @ 3 secs | 000000010000000000000003 | 000000010000000000000003 | 0/3000028  | 0/3000120  |      32951652 |    32951652 |       6963361 |          6963361 | <null>                            | <null>                                                                                 | f         | ok            | 2.59.3             |                 5
+        1 | 20261026-110039F_20261026-110042D | diff        | Mon Oct 26 11:00:42 2026 UTC | Mon Oct 26 11:00:43 2026 UTC | @ 1 sec  | 000000010000000000000005 | 000000010000000000000005 | 0/5000028  | 0/5000120  |      33656164 |     2859266 |       7397885 |          1390433 | 20261026-110039F                  | {20261026-110039F}                                                                     | f         | ok            | 2.59.3             |                 5
+        1 | 20261026-110039F_20261026-110043I | incr        | Mon Oct 26 11:00:43 2026 UTC | Mon Oct 26 11:00:44 2026 UTC | @ 1 sec  | 000000010000000000000007 | 000000010000000000000007 | 0/7000028  | 0/7000120  |      33992036 |     2605314 |       7614963 |          1523005 | 20261026-110039F_20261026-110042D | {20261026-110039F,20261026-110039F_20261026-110042D}                                   | f         | ok            | 2.59.3             |                 5
+        2 | 20261026-110125F                  | full        | Mon Oct 26 11:01:25 2026 UTC | Mon Oct 26 11:01:28 2026 UTC | @ 3 secs | 000000010000000000000009 | 000000010000000000000009 | 0/9000028  | 0/9000158  |      33992036 |    33992036 |       7614963 |          7614963 | <null>                            | <null>                                                                                 | f         | ok            | 2.59.3             |                 5
+        1 | 20261026-110039F_20261026-110134I | incr        | Mon Oct 26 11:01:34 2026 UTC | Mon Oct 26 11:01:42 2026 UTC | @ 8 secs | 000000010000000000000027 | 000000010000000000000027 | 0/27000028 | 0/27000120 |     489614694 |   457097476 |      72559750 |         65229416 | 20261026-110039F_20261026-110043I | {20261026-110039F,20261026-110039F_20261026-110042D,20261026-110039F_20261026-110043I} | f         | ok            | 2.59.3             |                 5
+(5 rows)
+
+-- 2. repo1 unreadable: status 99 recorded once, repo1 backups must NOT be marked expired
+SELECT pgbackrest_monitor.record_run('c1', 'lab', 'info', '2026-10-26 11:31:00+00', '2026-10-26 11:31:01+00', 0, 'success', NULL, :'perm'::jsonb) AS run_id;
+ run_id 
+--------
+      2
+(1 row)
+
+SELECT repo_key, status_code, left(status_message, 40) AS status_message, has_backup_metadata, has_archive_metadata FROM pgbackrest_monitor.repo_state WHERE stanza_name = 'lab' ORDER BY 1;
+ repo_key | status_code |              status_message              | has_backup_metadata | has_archive_metadata 
+----------+-------------+------------------------------------------+---------------------+----------------------
+        1 |          99 | [PathOpenError] unable to list file info | f                   | f
+        2 |           0 | ok                                       | t                   | t
+(2 rows)
+
+SELECT count(*) FILTER (WHERE present) AS present, count(*) FILTER (WHERE NOT present) AS expired FROM pgbackrest_monitor.backup WHERE stanza_name = 'lab';
+ present | expired 
+---------+---------
+       5 |       0
+(1 row)
+
+-- same failure again: no duplicate error row
+SELECT pgbackrest_monitor.record_run('c1', 'lab', 'info', '2026-10-26 11:32:00+00', '2026-10-26 11:32:01+00', 0, 'success', NULL, :'perm'::jsonb) AS run_id;
+ run_id 
+--------
+      3
+(1 row)
+
+SELECT occurred_at, stanza_name, repo_key, source, operation, category, exit_code, left(message, 60) AS message FROM pgbackrest_monitor.error_history ORDER BY error_id;
+         occurred_at          | stanza_name | repo_key |   source   | operation |  category   | exit_code |                           message                            
+------------------------------+-------------+----------+------------+-----------+-------------+-----------+--------------------------------------------------------------
+ Mon Oct 26 11:31:01 2026 UTC | lab         |        1 | pgbackrest | info      | repo_status |        99 | repo1 status 99: [PathOpenError] unable to list file info fo
+(1 row)
+
+-- 3. back to healthy, then expiry removes two repo1 backups
+SELECT pgbackrest_monitor.record_run('c1', 'lab', 'info', '2026-10-26 11:33:00+00', '2026-10-26 11:33:01+00', 0, 'success', NULL, :'lab'::jsonb) AS run_id;
+ run_id 
+--------
+      4
+(1 row)
+
+SELECT pgbackrest_monitor.record_run('c1', 'lab', 'info', '2026-10-26 11:34:00+00', '2026-10-26 11:34:01+00', 0, 'success', NULL, :'expired'::jsonb) AS run_id;
+ run_id 
+--------
+      5
+(1 row)
+
+SELECT repo_key, label, backup_type, backup_status, present, expired_detected_at FROM pgbackrest_monitor.backup_history WHERE stanza_name = 'lab' ORDER BY stopped_at, repo_key;
+ repo_key |               label               | backup_type | backup_status | present |     expired_detected_at      
+----------+-----------------------------------+-------------+---------------+---------+------------------------------
+        1 | 20261026-110039F                  | full        | ok            | t       | <null>
+        1 | 20261026-110039F_20261026-110042D | diff        | expired       | f       | Mon Oct 26 11:34:01 2026 UTC
+        1 | 20261026-110039F_20261026-110043I | incr        | expired       | f       | Mon Oct 26 11:34:01 2026 UTC
+        2 | 20261026-110125F                  | full        | ok            | t       | <null>
+        1 | 20261026-110039F_20261026-110134I | incr        | ok            | t       | <null>
+(5 rows)
+
+-- a backup reappearing (e.g. restored from another repo copy) is marked present again
+SELECT pgbackrest_monitor.record_run('c1', 'lab', 'info', '2026-10-26 11:35:00+00', '2026-10-26 11:35:01+00', 0, 'success', NULL, :'lab'::jsonb) AS run_id;
+ run_id 
+--------
+      6
+(1 row)
+
+SELECT count(*) FILTER (WHERE present) AS present, count(*) FILTER (WHERE NOT present) AS expired FROM pgbackrest_monitor.backup WHERE stanza_name = 'lab';
+ present | expired 
+---------+---------
+       5 |       0
+(1 row)
+
+-- 4. newest backup flagged with errors: error recorded once; latest good backup differs from latest
+SELECT pgbackrest_monitor.record_run('c1', 'lab', 'info', '2026-10-26 11:36:00+00', '2026-10-26 11:36:01+00', 0, 'success', NULL, :'witherr'::jsonb) AS run_id;
+ run_id 
+--------
+      7
+(1 row)
+
+SELECT pgbackrest_monitor.record_run('c1', 'lab', 'info', '2026-10-26 11:37:00+00', '2026-10-26 11:37:01+00', 0, 'success', NULL, :'witherr'::jsonb) AS run_id;
+ run_id 
+--------
+      8
+(1 row)
+
+SELECT latest_backup_label, latest_good_backup_label, backup_health, reason_code, left(latest_backup_error, 50) AS latest_backup_error
+FROM pgbackrest_monitor.backup_status WHERE stanza_name = 'lab';
+        latest_backup_label        | latest_good_backup_label | backup_health |   reason_code    |                latest_backup_error                 
+-----------------------------------+--------------------------+---------------+------------------+----------------------------------------------------
+ 20261026-110039F_20261026-110134I | 20261026-110125F         | WARNING       | BACKUP_HAS_ERROR | backup 20261026-110039F_20261026-110134I (incr) in
+(1 row)
+
+SELECT count(*) FROM pgbackrest_monitor.error_history WHERE category = 'backup_error';
+ count 
+-------
+     1
+(1 row)
+
+SELECT pgbackrest_monitor.record_run('c1', 'lab', 'info', '2026-10-26 11:38:00+00', '2026-10-26 11:38:01+00', 0, 'success', NULL, :'lab'::jsonb) AS run_id;
+ run_id 
+--------
+      9
+(1 row)
+
+-- 5. running backup with progress -> operation observations (running, then released)
+SELECT pgbackrest_monitor.record_run('c1', 'lab', 'info', '2026-10-26 11:39:00+00', '2026-10-26 11:39:01+00', 0, 'success', NULL, :'running'::jsonb) AS run_id;
+ run_id 
+--------
+     10
+(1 row)
+
+SELECT backup_lock_held, backup_lock_size, backup_lock_size_cplt, backup_lock_pct_cplt, restore_lock_held FROM pgbackrest_monitor.stanza_state WHERE stanza_name = 'lab';
+ backup_lock_held | backup_lock_size | backup_lock_size_cplt | backup_lock_pct_cplt | restore_lock_held 
+------------------+------------------+-----------------------+----------------------+-------------------
+ t                |        100000000 |              42000000 |                42.00 | f
+(1 row)
+
+SELECT source, operation, state, observed_at, pct_complete, size_total, size_complete, is_current FROM pgbackrest_monitor.operation_status
+WHERE stanza_name = 'lab' AND source = 'pgbackrest_lock' ORDER BY observed_at, operation;
+     source      |   operation   |    state    |         observed_at          | pct_complete | size_total | size_complete | is_current 
+-----------------+---------------+-------------+------------------------------+--------------+------------+---------------+------------
+ pgbackrest_lock | backup/expire | running     | Mon Oct 26 11:39:01 2026 UTC |        42.00 |  100000000 |      42000000 | t
+ pgbackrest_lock | backup/expire | running     | Mon Oct 26 11:39:01 2026 UTC |        42.00 |  100000000 |      42000000 | f
+ pgbackrest_lock | restore       | not running | Mon Oct 26 11:39:01 2026 UTC |       <null> |     <null> |        <null> | t
+(3 rows)
+
+SELECT pgbackrest_monitor.record_run('c1', 'lab', 'info', '2026-10-26 11:40:00+00', '2026-10-26 11:40:01+00', 0, 'success', NULL, :'lab'::jsonb) AS run_id;
+ run_id 
+--------
+     11
+(1 row)
+
+SELECT observed_at, operation, held, pct_complete, repo_progress FROM pgbackrest_monitor.operation_observation ORDER BY observation_id;
+         observed_at          |   operation   | held | pct_complete |                     repo_progress                      
+------------------------------+---------------+------+--------------+--------------------------------------------------------
+ Mon Oct 26 11:39:01 2026 UTC | backup/expire | t    |        42.00 | [{"key": 1, "size": 100000000, "size-cplt": 42000000}]
+ Mon Oct 26 11:40:01 2026 UTC | backup/expire | f    |       <null> | <null>
+(2 rows)
+
+-- 6. pre-2.33 single-repository shape (no repo array / repo-key): synthesised repo key 1
+SELECT pgbackrest_monitor.record_run('c1', 'legacy', 'info', '2026-10-26 11:41:00+00', '2026-10-26 11:41:01+00', 0, 'success', NULL,
+       jsonb_set(:'legacy'::jsonb, '{0,name}', '"legacy"')) AS run_id;
+ run_id 
+--------
+     12
+(1 row)
+
+SELECT stanza_name, repo_key, status_code, status_message, archive_id, archive_min, archive_max, db_version FROM pgbackrest_monitor.repo_state WHERE stanza_name = 'legacy';
+ stanza_name | repo_key | status_code | status_message | archive_id |       archive_min        |       archive_max        | db_version 
+-------------+----------+-------------+----------------+------------+--------------------------+--------------------------+------------
+ legacy      |        1 |           0 | ok             | 18-1       | 000000010000000000000001 | 000000010000000000000027 | 18
+(1 row)
+
+SELECT repo_key, label, backup_type, lsn_start, has_error, pgbackrest_version FROM pgbackrest_monitor.backup_history WHERE stanza_name = 'legacy' ORDER BY stopped_at;
+ repo_key |               label               | backup_type | lsn_start | has_error | pgbackrest_version 
+----------+-----------------------------------+-------------+-----------+-----------+--------------------
+        1 | 20261026-110039F                  | full        | <null>    | <null>    | 2.31
+        1 | 20261026-110039F_20261026-110042D | diff        | <null>    | <null>    | 2.31
+        1 | 20261026-110039F_20261026-110043I | incr        | <null>    | <null>    | 2.31
+        1 | 20261026-110039F_20261026-110134I | incr        | <null>    | <null>    | 2.31
+(4 rows)
+
+SELECT pgbackrest_version_seen, repo_count, backup_count FROM pgbackrest_monitor.stanza_state WHERE stanza_name = 'legacy';
+ pgbackrest_version_seen | repo_count | backup_count 
+-------------------------+------------+--------------
+ 2.31                    |          1 |            4
+(1 row)
+
+-- 7. no backups / missing stanza
+SELECT pgbackrest_monitor.record_run('c1', 'empty', 'info', '2026-10-26 11:42:00+00', '2026-10-26 11:42:01+00', 0, 'success', NULL, :'empty'::jsonb) AS run_id;
+ run_id 
+--------
+     13
+(1 row)
+
+SELECT pgbackrest_monitor.record_run('c1', 'doesnotexist', 'info', '2026-10-26 11:42:00+00', '2026-10-26 11:42:01+00', 0, 'success', NULL, :'missing'::jsonb) AS run_id;
+ run_id 
+--------
+     14
+(1 row)
+
+SELECT stanza_name, repo_key, status_code, status_message, archive_max, has_backup_metadata, has_archive_metadata FROM pgbackrest_monitor.repo_state WHERE stanza_name IN ('empty', 'doesnotexist') ORDER BY 1, 2;
+ stanza_name  | repo_key | status_code |   status_message    | archive_max | has_backup_metadata | has_archive_metadata 
+--------------+----------+-------------+---------------------+-------------+---------------------+----------------------
+ doesnotexist |        1 |           1 | missing stanza path | <null>      | f                   | f
+ doesnotexist |        2 |           1 | missing stanza path | <null>      | f                   | f
+ empty        |        1 |           2 | no valid backups    | <null>      | f                   | t
+ empty        |        2 |           2 | no valid backups    | <null>      | f                   | t
+(4 rows)
+
+-- 8. output of `info` without --stanza contains several stanzas: the right element is picked
+SELECT pgbackrest_monitor.record_run('c1', 'empty', 'info', '2026-10-26 11:43:00+00', '2026-10-26 11:43:01+00', 0, 'success', NULL, :'allst'::jsonb) AS run_id;
+ run_id 
+--------
+     15
+(1 row)
+
+SELECT stanza_name, status_code, backup_count FROM pgbackrest_monitor.stanza_state WHERE stanza_name = 'empty';
+ stanza_name | status_code | backup_count 
+-------------+-------------+--------------
+ empty       |           2 |            0
+(1 row)
+
+-- 9. invalid documents are recorded as validation_failed and leave state untouched
+SELECT pgbackrest_monitor.record_run('c1', 'lab', 'info', '2026-10-26 11:44:00+00', '2026-10-26 11:44:01+00', 0, 'success', NULL, :'bad1'::jsonb) AS run_id;
+ run_id 
+--------
+     16
+(1 row)
+
+SELECT pgbackrest_monitor.record_run('c1', 'lab', 'info', '2026-10-26 11:44:10+00', '2026-10-26 11:44:11+00', 0, 'success', NULL, :'bad2'::jsonb) AS run_id;
+ run_id 
+--------
+     17
+(1 row)
+
+SELECT pgbackrest_monitor.record_run('c1', 'lab', 'info', '2026-10-26 11:44:20+00', '2026-10-26 11:44:21+00', 0, 'success', NULL, '{"name":"lab"}'::jsonb) AS run_id;
+ run_id 
+--------
+     18
+(1 row)
+
+SELECT pgbackrest_monitor.record_run('c1', 'lab', 'info', '2026-10-26 11:44:30+00', '2026-10-26 11:44:31+00', 0, 'success', NULL, :'empty'::jsonb) AS run_id;
+ run_id 
+--------
+     19
+(1 row)
+
+SELECT pgbackrest_monitor.record_run('c1', 'lab', 'info', '2026-10-26 11:44:40+00', '2026-10-26 11:44:41+00', 0, 'success', NULL, NULL) AS run_id;
+ run_id 
+--------
+     20
+(1 row)
+
+SELECT started_at, outcome, exit_code, error_message FROM pgbackrest_monitor.collection_run WHERE stanza_name = 'lab' AND started_at >= '2026-10-26 11:44:00+00' ORDER BY run_id;
+          started_at          |      outcome      | exit_code |                      error_message                      
+------------------------------+-------------------+-----------+---------------------------------------------------------
+ Mon Oct 26 11:44:00 2026 UTC | validation_failed |         0 | backup entry in stanza "lab" lacks label/type/timestamp
+ Mon Oct 26 11:44:10 2026 UTC | validation_failed |         0 | stanza "lab" has no status.code
+ Mon Oct 26 11:44:20 2026 UTC | validation_failed |         0 | info output must be a JSON array
+ Mon Oct 26 11:44:30 2026 UTC | validation_failed |         0 | stanza "lab" is not present in info output
+ Mon Oct 26 11:44:40 2026 UTC | validation_failed |         0 | info output must be a JSON array
+(5 rows)
+
+SELECT observed_at, backup_count FROM pgbackrest_monitor.stanza_state WHERE stanza_name = 'lab';
+         observed_at          | backup_count 
+------------------------------+--------------
+ Mon Oct 26 11:40:01 2026 UTC |            5
+(1 row)
+
+-- 10. collector-side failures
+SELECT pgbackrest_monitor.record_run('c1', 'lab', 'info', '2026-10-26 11:45:00+00', '2026-10-26 11:45:00+00', NULL, 'binary_missing', 'pgbackrest executable not found: /usr/bin/pgbackrest', NULL) AS run_id;
+ run_id 
+--------
+     21
+(1 row)
+
+SELECT pgbackrest_monitor.record_run('c1', 'lab', 'info', '2026-10-26 11:45:10+00', '2026-10-26 11:46:10+00', NULL, 'timeout', 'pgbackrest info did not finish within 60s and was killed', NULL) AS run_id;
+ run_id 
+--------
+     22
+(1 row)
+
+SELECT pgbackrest_monitor.record_run('c1', 'lab', 'info', '2026-10-26 11:46:20+00', '2026-10-26 11:46:21+00', 41, 'command_failed', 'pgbackrest info exited with code 41: ERROR: [041]: unable to open file ''/etc/pgbackrest.conf'' for read: [13] Permission denied', NULL) AS run_id;
+ run_id 
+--------
+     23
+(1 row)
+
+SELECT pgbackrest_monitor.record_run('c1', 'lab', 'info', '2026-10-26 11:46:30+00', '2026-10-26 11:46:30+00', NULL, 'skipped_locked', 'another collector holds the lock for this stanza', NULL) AS run_id;
+ run_id 
+--------
+     24
+(1 row)
+
+SELECT pgbackrest_monitor.record_run('c1', 'lab', 'info', '2026-10-26 11:46:40+00', '2026-10-26 11:46:40+00', NULL, 'bogus_outcome', NULL, NULL) AS run_id;
+ERROR:  new row for relation "collection_run" violates check constraint "collection_run_outcome_check"
+DETAIL:  Failing row contains (25, c1, lab, info, Mon Oct 26 11:46:40 2026 UTC, Mon Oct 26 11:46:40 2026 UTC, null, bogus_outcome, null, null).
+CONTEXT:  SQL statement "INSERT INTO pgbackrest_monitor.collection_run
+        (collector_id, stanza_name, command, started_at, finished_at, exit_code, outcome, error_message, raw_output)
+    VALUES (p_collector_id, p_stanza, p_command, p_started_at, p_finished_at, p_exit_code, p_outcome,
+            left(p_error_message, 4000), p_raw_output)
+    RETURNING run_id"
+PL/pgSQL function pgbackrest_monitor.record_run(text,text,text,timestamp with time zone,timestamp with time zone,integer,text,text,jsonb) line 6 at SQL statement
+SET pgbackrest_monitor.clock_override = '2026-10-26 11:47:00+00';
+SELECT pgbackrest_monitor.record_error('lab', 'config_error', 'stanza section misconfigured', 'load_config', '{"key": "repo"}');
+ record_error 
+--------------
+           13
+(1 row)
+
+RESET pgbackrest_monitor.clock_override;
+SELECT occurred_at, stanza_name, source, operation, category, exit_code, left(message, 70) AS message FROM pgbackrest_monitor.error_history WHERE occurred_at >= '2026-10-26 11:44:00+00' OR category = 'config_error' ORDER BY error_id;
+         occurred_at          | stanza_name |   source   |  operation  |     category      | exit_code |                                message                                 
+------------------------------+-------------+------------+-------------+-------------------+-----------+------------------------------------------------------------------------
+ Mon Oct 26 11:44:01 2026 UTC | lab         | collector  | info        | validation_failed |         0 | backup entry in stanza "lab" lacks label/type/timestamp
+ Mon Oct 26 11:44:11 2026 UTC | lab         | collector  | info        | validation_failed |         0 | stanza "lab" has no status.code
+ Mon Oct 26 11:44:21 2026 UTC | lab         | collector  | info        | validation_failed |         0 | info output must be a JSON array
+ Mon Oct 26 11:44:31 2026 UTC | lab         | collector  | info        | validation_failed |         0 | stanza "lab" is not present in info output
+ Mon Oct 26 11:44:41 2026 UTC | lab         | collector  | info        | validation_failed |         0 | info output must be a JSON array
+ Mon Oct 26 11:45:00 2026 UTC | lab         | collector  | info        | binary_missing    |    <null> | pgbackrest executable not found: /usr/bin/pgbackrest
+ Mon Oct 26 11:46:10 2026 UTC | lab         | collector  | info        | timeout           |    <null> | pgbackrest info did not finish within 60s and was killed
+ Mon Oct 26 11:46:21 2026 UTC | lab         | pgbackrest | info        | command_failed    |        41 | pgbackrest info exited with code 41: ERROR: [041]: unable to open file
+ Mon Oct 26 11:47:00 2026 UTC | lab         | collector  | load_config | config_error      |    <null> | stanza section misconfigured
+(9 rows)
+
+SELECT stanza_name, last_success_at, last_attempt_at, last_attempt_outcome, last_failure_outcome FROM pgbackrest_monitor.collection_status WHERE stanza_name = 'lab';
+ stanza_name |       last_success_at        |       last_attempt_at        | last_attempt_outcome | last_failure_outcome 
+-------------+------------------------------+------------------------------+----------------------+----------------------
+ lab         | Mon Oct 26 11:40:01 2026 UTC | Mon Oct 26 11:46:30 2026 UTC | skipped_locked       | command_failed
+(1 row)
+
+SELECT source, operation, state, observed_at, finished_at, exit_code, left(detail, 40) AS detail FROM pgbackrest_monitor.operation_status
+WHERE stanza_name = 'lab' AND source = 'collector' AND observed_at >= '2026-10-26 11:45:00+00' ORDER BY observed_at;
+  source   |    operation    |  state  |         observed_at          |         finished_at          | exit_code |                  detail                  
+-----------+-----------------+---------+------------------------------+------------------------------+-----------+------------------------------------------
+ collector | pgbackrest info | failed  | Mon Oct 26 11:45:00 2026 UTC | Mon Oct 26 11:45:00 2026 UTC |    <null> | pgbackrest executable not found: /usr/bi
+ collector | pgbackrest info | failed  | Mon Oct 26 11:45:10 2026 UTC | Mon Oct 26 11:46:10 2026 UTC |    <null> | pgbackrest info did not finish within 60
+ collector | pgbackrest info | failed  | Mon Oct 26 11:46:20 2026 UTC | Mon Oct 26 11:46:21 2026 UTC |        41 | pgbackrest info exited with code 41: ERR
+ collector | pgbackrest info | skipped | Mon Oct 26 11:46:30 2026 UTC | Mon Oct 26 11:46:30 2026 UTC |    <null> | another collector holds the lock for thi
+(4 rows)
+
+-- 11. local archiver sample: shape only (values depend on the server)
+SELECT pgbackrest_monitor.sample_pg_archiver() > 0 AS sampled;
+ sampled 
+---------
+ t
+(1 row)
+
+SELECT instance, server_version_num >= 130000 AS version_ok, in_recovery IS NOT NULL AS has_recovery, archive_mode IS NOT NULL AS has_mode,
+       wal_segment_size > 0 AS seg_ok, current_wal_lsn IS NOT NULL AS has_lsn, current_wal_file ~ '^[0-9A-F]{24}$' AS wal_file_ok,
+       archived_count IS NOT NULL AS has_counts
+FROM pgbackrest_monitor.latest_pg_archiver;
+ instance | version_ok | has_recovery | has_mode | seg_ok | has_lsn | wal_file_ok | has_counts 
+----------+------------+--------------+----------+--------+---------+-------------+------------
+ local    | t          | t            | t        | t      | t       | t           | t
+(1 row)
+
+-- remote sample recorder rejects bad instance names
+SELECT pgbackrest_monitor.record_pg_archiver_sample('bad name', 160000, true, 'on', true, NULL, 16777216, 0, NULL, NULL, 0, NULL, NULL, NULL, '0/1', 1, 0);
+ERROR:  invalid instance name
+CONTEXT:  PL/pgSQL function pgbackrest_monitor.record_pg_archiver_sample(text,integer,boolean,text,boolean,boolean,bigint,bigint,text,timestamp with time zone,bigint,text,timestamp with time zone,timestamp with time zone,pg_lsn,bigint,numeric) line 7 at RAISE

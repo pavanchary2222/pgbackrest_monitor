@@ -1,0 +1,14 @@
+# One-shot mode, driven by pgbackrest-monitor-collector.timer.  Alternative to the daemon unit;
+# enable only one of the two.
+[Unit]
+Description=pgbackrest_monitor collector (single cycle)
+After=network.target postgresql.service
+
+[Service]
+Type=oneshot
+User=postgres
+Group=postgres
+ExecStart=/usr/local/bin/pgbackrest-monitor-collector --config /etc/pgbackrest-monitor/collector.conf --once
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only

@@ -1,0 +1,32 @@
+# Daemon mode: one long-running collector looping every `interval` seconds.
+[Unit]
+Description=pgbackrest_monitor collector (feeds pgBackRest status into PostgreSQL)
+Documentation=https://github.com/<you>/pgbackrest_monitor
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+# Must be able to read the pgBackRest configuration and reach the repository; usually the same
+# OS user that runs pgBackRest (postgres).
+User=postgres
+Group=postgres
+ExecStart=/usr/local/bin/pgbackrest-monitor-collector --config /etc/pgbackrest-monitor/collector.conf
+Restart=always
+RestartSec=15
+# Give the current stanza time to finish on stop (collector exits after it).
+TimeoutStopSec=90
+KillSignal=SIGTERM
+
+# Hardening: the collector only needs to read pgBackRest config/repo and talk to PostgreSQL.
+NoNewPrivileges=true
+PrivateTmp=false
+ProtectSystem=full
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,7 @@
+# pgbackrest_monitor extension
+comment = 'pgBackRest backup, WAL archive and repository health exposed through SQL'
+default_version = '1.0'
+schema = pgbackrest_monitor
+relocatable = false
+superuser = true
+trusted = false

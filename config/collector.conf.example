@@ -1,0 +1,43 @@
+# pgbackrest_monitor collector configuration
+# Install as /etc/pgbackrest-monitor/collector.conf, readable only by the collector's OS user
+# (it may name a database user; keep the password in ~/.pgpass, never here).
+
+[collector]
+# libpq connection string or URI for the database where CREATE EXTENSION pgbackrest_monitor was run.
+dsn = host=/var/run/postgresql dbname=postgres user=pgbrmon_collector
+# Stable identifier for this collector (default: hostname).  One row per id in pgbackrest_monitor.collector.
+# collector_id = db1
+# Seconds between collection cycles in daemon mode (minimum 5).
+interval = 60
+# Hard timeout, in seconds, for each pgbackrest command.
+timeout = 60
+pgbackrest_binary = /usr/bin/pgbackrest
+# Optional: --config / --config-include-path / --config-path passed to every pgbackrest invocation.
+# pgbackrest_config = /etc/pgbackrest/pgbackrest.conf
+# pgbackrest_config_include_path = /etc/pgbackrest/conf.d
+# Optional extra --name=value options added to every invocation (validated; --stanza/--output/--set/--type refused).
+# options = --log-level-console=warn
+# Run retention (pgbackrest_monitor.purge_history) every N cycles.
+purge_every_cycles = 10
+log_level = info
+
+# Optional: other PostgreSQL instances whose pg_stat_archiver should be sampled (read-only
+# connection; no superuser needed).  Typical use: a standby that archives with archive_mode=always,
+# or when this collector runs on a repository host and the extension lives in a central database.
+# [instance:standby1]
+# dsn = host=standby1 dbname=postgres user=pgbrmon_collector
+
+# One section per stanza to monitor.  Only stanzas listed here are ever passed to pgbackrest.
+[stanza:main]
+# Which PostgreSQL instance's archiver statistics are comparable with this stanza's repository:
+#   local            the instance holding the extension (default)
+#   <instance name>  an [instance:<name>] defined above
+#   none             do not compare (repository archive metadata only)
+pg_instance = local
+# Optional: restrict `info` to one repository.
+# repo = 1
+# Optional per-stanza extra options.
+# options = --log-level-console=warn
+
+# [stanza:analytics]
+# pg_instance = none

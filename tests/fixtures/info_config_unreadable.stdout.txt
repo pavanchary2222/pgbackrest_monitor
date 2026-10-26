@@ -1,0 +1,1 @@
+P00  ERROR: [041]: unable to open file '/etc/pgbackrest.conf' for read: [13] Permission denied

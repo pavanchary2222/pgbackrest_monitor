@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the pgbackrest_monitor collector every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Unit=pgbackrest-monitor-collector-once.service
+
+[Install]
+WantedBy=timers.target

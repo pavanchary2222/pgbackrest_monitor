@@ -1,0 +1,201 @@
+-- Least privilege: reader sees, collector feeds, neither can alter configuration or history directly.
+\pset null '<null>'
+SET timezone = 'UTC';
+-- each test file starts from a clean extension state (pg_regress shares one database)
+DROP EXTENSION pgbackrest_monitor CASCADE;
+CREATE EXTENSION pgbackrest_monitor;
+\set lab `cat tests/fixtures/info_lab_healthy.json`
+CREATE ROLE regress_pgbrmon_reader LOGIN;
+CREATE ROLE regress_pgbrmon_collector LOGIN;
+CREATE ROLE regress_pgbrmon_nobody LOGIN;
+GRANT pgbackrest_monitor_reader TO regress_pgbrmon_reader;
+GRANT pgbackrest_monitor_collector TO regress_pgbrmon_collector;
+SELECT pgbackrest_monitor.register_collector('c1', 'host1', 100, '1.0.0', '2.59.3', '1 minute', ARRAY['lab']);
+ register_collector 
+--------------------
+ <null>
+(1 row)
+
+SELECT pgbackrest_monitor.register_stanza('lab');
+ register_stanza 
+-----------------
+ <null>
+(1 row)
+
+SELECT pgbackrest_monitor.record_run('c1', 'lab', 'info', now() - interval '2s', now() - interval '1s', 0, 'success', NULL, :'lab'::jsonb) > 0 AS recorded;
+ recorded 
+----------
+ t
+(1 row)
+
+-- unrelated role: nothing
+SET ROLE regress_pgbrmon_nobody;
+SELECT count(*) FROM pgbackrest_monitor.health;
+ERROR:  permission denied for schema pgbackrest_monitor
+LINE 1: SELECT count(*) FROM pgbackrest_monitor.health;
+                             ^
+SELECT pgbackrest_monitor.record_run('x', 'lab', 'info', now(), now(), 0, 'success', NULL, '[]');
+ERROR:  permission denied for schema pgbackrest_monitor
+LINE 1: SELECT pgbackrest_monitor.record_run('x', 'lab', 'info', now...
+               ^
+RESET ROLE;
+-- reader: all views and tables readable, nothing writable, no collector API
+SET ROLE regress_pgbrmon_reader;
+SELECT stanza_name, backup_status, collector_status FROM pgbackrest_monitor.health;
+ stanza_name | backup_status | collector_status 
+-------------+---------------+------------------
+ lab         | OK            | OK
+(1 row)
+
+SELECT count(*) > 0 AS has_backups FROM pgbackrest_monitor.backup_history;
+ has_backups 
+-------------
+ t
+(1 row)
+
+SELECT count(*) FROM pgbackrest_monitor.error_history;
+ count 
+-------
+     0
+(1 row)
+
+SELECT count(*) FROM pgbackrest_monitor.effective_settings;
+ count 
+-------
+    19
+(1 row)
+
+SELECT count(*) FROM pgbackrest_monitor.operation_status;
+ count 
+-------
+     3
+(1 row)
+
+SELECT count(*) FROM pgbackrest_monitor.archive_status;
+ count 
+-------
+     2
+(1 row)
+
+SELECT count(*) FROM pgbackrest_monitor.repository_status;
+ count 
+-------
+     2
+(1 row)
+
+SELECT count(*) FROM pgbackrest_monitor.backup_status;
+ count 
+-------
+     1
+(1 row)
+
+INSERT INTO pgbackrest_monitor.config VALUES ('backup_max_age_warning', '1 hour');
+ERROR:  permission denied for table config
+UPDATE pgbackrest_monitor.stanza SET enabled = false;
+ERROR:  permission denied for table stanza
+DELETE FROM pgbackrest_monitor.backup;
+ERROR:  permission denied for table backup
+SELECT pgbackrest_monitor.set_setting('backup_max_age_warning', '1 hour');
+ERROR:  permission denied for function set_setting
+SELECT pgbackrest_monitor.record_run('c1', 'lab', 'info', now(), now(), 0, 'success', NULL, '[]');
+ERROR:  permission denied for function record_run
+SELECT pgbackrest_monitor.heartbeat('c1');
+ERROR:  permission denied for function heartbeat
+SELECT pgbackrest_monitor.purge_history();
+ERROR:  permission denied for function purge_history
+RESET ROLE;
+-- collector: API only; no direct DML, no settings
+SET ROLE regress_pgbrmon_collector;
+SELECT pgbackrest_monitor.heartbeat('c1');
+ heartbeat 
+-----------
+ <null>
+(1 row)
+
+SELECT pgbackrest_monitor.try_lock_stanza('lab'), pgbackrest_monitor.try_lock_stanza('lab');
+ try_lock_stanza | try_lock_stanza 
+-----------------+-----------------
+ t               | t
+(1 row)
+
+SELECT pgbackrest_monitor.unlock_stanza('lab');
+ unlock_stanza 
+---------------
+ t
+(1 row)
+
+SELECT pgbackrest_monitor.record_run('c1', 'lab', 'info', now(), now(), 0, 'success', NULL, :'lab'::jsonb) > 0 AS recorded;
+ recorded 
+----------
+ t
+(1 row)
+
+SELECT pgbackrest_monitor.record_error('lab', 'config_error', 'x') > 0 AS recorded;
+ recorded 
+----------
+ t
+(1 row)
+
+SELECT pgbackrest_monitor.sample_pg_archiver() > 0 AS sampled;
+ sampled 
+---------
+ t
+(1 row)
+
+SELECT count(*) FROM pgbackrest_monitor.purge_history();
+ count 
+-------
+     6
+(1 row)
+
+SELECT stanza_name, backup_status FROM pgbackrest_monitor.health;
+ stanza_name | backup_status 
+-------------+---------------
+ lab         | OK
+(1 row)
+
+INSERT INTO pgbackrest_monitor.config VALUES ('backup_max_age_warning', '1 hour');
+ERROR:  permission denied for table config
+UPDATE pgbackrest_monitor.backup SET has_error = true;
+ERROR:  permission denied for table backup
+DELETE FROM pgbackrest_monitor.error_history;
+ERROR:  permission denied for table error_history
+SELECT pgbackrest_monitor.set_setting('backup_max_age_warning', '1 hour');
+ERROR:  permission denied for function set_setting
+RESET ROLE;
+-- concurrent collection: the advisory lock is per session
+SELECT pgbackrest_monitor.try_lock_stanza('lab') AS first_lock;
+ first_lock 
+------------
+ t
+(1 row)
+
+\c - - - -
+SELECT pgbackrest_monitor.try_lock_stanza('lab') AS second_session_lock;
+ second_session_lock 
+---------------------
+ t
+(1 row)
+
+-- (the first session's lock vanished with its connection above; take and release in this one)
+SELECT pgbackrest_monitor.unlock_stanza('lab');
+ unlock_stanza 
+---------------
+ t
+(1 row)
+
+SELECT pgbackrest_monitor.unlock_stanza('lab') AS already_unlocked;
+WARNING:  you don't own a lock of type ExclusiveLock
+ already_unlocked 
+------------------
+ f
+(1 row)
+
+-- secrets never land in stored messages when the collector passes them redacted (DB side stores verbatim)
+SELECT left(pgbackrest_monitor.setting('lab', 'retention_errors'), 20) AS retention_errors;
+ retention_errors 
+------------------
+ 30 days
+(1 row)
+
+DROP ROLE regress_pgbrmon_reader, regress_pgbrmon_collector, regress_pgbrmon_nobody;

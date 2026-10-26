@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pgbackrest-monitor-collector"
+version = "1.0.0"
+description = "Collector feeding the pgbackrest_monitor PostgreSQL extension with pgBackRest info output"
+requires-python = ">=3.8"
+license = {text = "PostgreSQL"}
+dependencies = ["psycopg2-binary>=2.8; platform_system != 'Linux' or python_version < '0'", ]
+# On Debian/Ubuntu/RHEL install the distribution package instead (python3-psycopg2);
+# psycopg2 (any 2.8+) is the only runtime dependency beside the standard library.
+
+[project.scripts]
+pgbackrest-monitor-collector = "pgbackrest_monitor_collector.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]

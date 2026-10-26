@@ -1,0 +1,2 @@
+# Equivalent cron entry (as the pgbackrest OS user) when systemd timers are not wanted:
+* * * * * /usr/local/bin/pgbackrest-monitor-collector --config /etc/pgbackrest-monitor/collector.conf --once >> /var/log/pgbackrest/monitor-collector.log 2>&1
