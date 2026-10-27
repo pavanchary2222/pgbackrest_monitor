@@ -1,7 +1,7 @@
 # Daemon mode: one long-running collector looping every `interval` seconds.
 [Unit]
 Description=pgbackrest_monitor collector (feeds pgBackRest status into PostgreSQL)
-Documentation=https://github.com/<you>/pgbackrest_monitor
+Documentation=https://github.com/pavanchary2222/pgbackrest_monitor
 After=network.target postgresql.service
 Wants=postgresql.service
 

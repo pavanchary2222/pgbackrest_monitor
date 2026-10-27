@@ -34,7 +34,7 @@ repository host, see "Repository host" below.
 ## 1. Install the files
 
 ```bash
-git clone https://github.com/<you>/pgbackrest_monitor.git     # see docs/PUBLISHING.md
+git clone https://github.com/pavanchary2222/pgbackrest_monitor.git
 cd pgbackrest_monitor
 
 sudo make install                          # copies .control and .sql into $(pg_config --sharedir)/extension
@@ -65,6 +65,14 @@ GRANT pgbackrest_monitor_collector TO pgbrmon_collector;
 -- anyone who should read the views (Grafana, Nagios, DBAs)
 GRANT pgbackrest_monitor_reader TO monitoring_user;
 ```
+
+> **Note: the two roles are created by `CREATE EXTENSION`, not by the installer or the collector.**
+> The extension script `sql/pgbackrest_monitor--1.0.sql` creates `pgbackrest_monitor_collector` and
+> `pgbackrest_monitor_reader` as NOLOGIN group roles if they do not already exist in the cluster, then
+> grants them EXECUTE on the collector API functions and SELECT on the views respectively.  They cannot
+> log in; you create your own LOGIN role(s) and grant the group role to them, as shown above.
+> Because roles are cluster-wide, creating the extension in a second database reuses the existing roles,
+> and `DROP EXTENSION` leaves them in place (see "Uninstalling").
 
 Authentication for `pgbrmon_collector`: the collector runs as the `postgres` OS user, so the simplest
 is a `pg_hba.conf` line with peer authentication mapped to that role, or a password kept in
@@ -170,6 +178,71 @@ Run the collector on the repository host, where `pgbackrest info` works, and poi
 database server that holds the extension.  For stanzas whose PostgreSQL archiver statistics are on another
 server, declare an `[instance:...]` for that server, or use `pg_instance = none` to monitor the repository
 side only.
+
+#### Example: backups taken from a standby, repository on a separate host
+
+Layout:
+
+| Host | Role | Has |
+|---|---|---|
+| `pgprimary` | PostgreSQL primary, runs `archive_command` | the database, WAL archiving statistics |
+| `pgstandby` | streaming standby, `backup-standby=y` source | a copy of the database |
+| `repohost` | pgBackRest repository host | `pgbackrest` binary, `pgbackrest.conf`, the repository, **no database** |
+
+The collector must run on `repohost`, because that is the only machine where `pgbackrest info` can read
+the repository.  The extension must live in a writable PostgreSQL database, which `repohost` does not have,
+so it is installed on the primary and the collector writes to it over the network.  The fact that the
+backup was taken from the standby does not matter to the monitor: `info` reports a backup of the cluster.
+
+On `pgprimary` (superuser):
+
+```sql
+CREATE EXTENSION pgbackrest_monitor;                 -- creates the two NOLOGIN group roles
+CREATE ROLE pgbrmon_collector LOGIN PASSWORD '...';
+GRANT pgbackrest_monitor_collector TO pgbrmon_collector;
+```
+
+and a `pg_hba.conf` entry allowing `pgbrmon_collector` from `repohost`.
+
+On `repohost`, install only the collector (`sudo ./install.sh collector`, no PostgreSQL dev package
+needed), put the password in `~postgres/.pgpass` and configure:
+
+```ini
+[collector]
+collector_id = repohost
+dsn = host=pgprimary port=5432 dbname=postgres user=pgbrmon_collector
+interval = 60
+
+[stanza:main]
+# "local" = the database the collector writes to, i.e. the primary.  Its pg_stat_archiver is the
+# right comparison because the primary runs archive_command even when backups come from the standby.
+pg_instance = local
+```
+
+If the **standby** does the archiving (`archive_mode = always` on the standby and the primary does not
+archive), compare against the standby instead:
+
+```ini
+[instance:pgstandby]
+dsn = host=pgstandby port=5432 dbname=postgres user=pgbrmon_collector
+
+[stanza:main]
+pg_instance = pgstandby
+```
+
+If the collector may not connect to any database server except for storing results, or you prefer to
+keep the production primary untouched, run a small PostgreSQL on `repohost` for the extension and set
+`pg_instance = none` (repository-side monitoring only: backup age and types, repository status, errors,
+running operations and the WAL range stored in the repository; the archive component then reports
+`ARCHIVE_NO_PG_COMPARISON` instead of comparing with PostgreSQL).
+
+Check from `repohost`:
+
+```bash
+sudo -u postgres pgbackrest-monitor-collector --check-config
+sudo -u postgres pgbackrest-monitor-collector --once --log-level debug
+psql -h pgprimary -U pgbrmon_collector -d postgres -c "SELECT * FROM pgbackrest_monitor.health;"
+```
 
 ### Multiple repositories (repo1 + repo2)
 Nothing to configure: `info` reports every repository and the views have one row per `repo_key`.

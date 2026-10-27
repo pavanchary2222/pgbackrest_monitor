@@ -53,7 +53,8 @@ restore progress 2.56+, per-repo progress 2.59+) are optional everywhere: missin
 ## Installation
 
 The short version follows; `docs/INSTALL.md` has the full walkthrough with distribution-specific
-packages, standby and repository-host layouts, and troubleshooting of first results.
+packages, standby and repository-host layouts (including backups taken from a standby with the
+repository on a separate host), and troubleshooting of first results.
 
 Prerequisites: PostgreSQL server dev package (`postgresql-server-dev-NN`), `pgbackrest`,
 `python3`, `python3-psycopg2`.
@@ -67,6 +68,9 @@ sudo ./install.sh                          # make install + collector to /usr/lo
 psql -d postgres -c "CREATE EXTENSION pgbackrest_monitor;"
 psql -d postgres -c "CREATE ROLE pgbrmon_collector LOGIN; GRANT pgbackrest_monitor_collector TO pgbrmon_collector;"
 psql -d postgres -c "GRANT pgbackrest_monitor_reader TO grafana;"      # whoever reads the views
+#    Note: the NOLOGIN group roles pgbackrest_monitor_collector and pgbackrest_monitor_reader are
+#    created by CREATE EXTENSION itself (if missing in the cluster); you only create the LOGIN
+#    role and grant the group role to it.  DROP EXTENSION does not remove them.
 
 # 3. collector
 sudo -e /etc/pgbackrest-monitor/collector.conf       # dsn + one [stanza:<name>] per stanza
