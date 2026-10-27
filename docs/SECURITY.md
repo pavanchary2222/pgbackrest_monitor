@@ -40,6 +40,39 @@ What the collector role **cannot** do (verified by `tests/sql/permissions.sql`):
 any table, change thresholds, read other schemas it was not granted.  What the reader **cannot** do:
 call any writing function.  `PUBLIC` has no privileges on the schema at all.
 
+### Why two roles instead of just using `postgres`
+
+I was asked this more than once while building the tool, so here is my reasoning.
+
+You *can* run the collector as `postgres`.  A superuser bypasses every GRANT, so if the `dsn` in
+`collector.conf` says `user=postgres` everything works and the two roles simply sit unused.  Nothing in
+the code checks for membership.  I still create them, and I use them myself, for three reasons.
+
+1. **Blast radius of the collector's credentials.**  In the deployments I care about, the collector runs
+   on the repository host and connects to the production primary over the network, with a password in
+   `.pgpass` on that host.  With `pgbackrest_monitor_collector`, those credentials can call about ten
+   functions that insert monitoring rows into one schema, and that is all.  With `postgres`, anyone who
+   reads that file or compromises the backup server has a superuser login to production from a remote
+   host, and I would also have to open `pg_hba.conf` to superuser logins from that host.  I am not willing
+   to ship a monitoring tool that needs that.
+
+2. **Readers.**  `pgbackrest_monitor_reader` exists so Grafana, Nagios, Zabbix or a DBA can see backup
+   health without being a superuser.  Without it I would either hand them `postgres` or repeat the same
+   dozen GRANT statements by hand on every install.
+
+3. **Protecting the data from the collector itself.**  The API functions are SECURITY DEFINER, so the
+   collector never gets direct INSERT, UPDATE or DELETE on the tables.  A bug in the collector cannot
+   rewrite history, and a collector cannot flip `enabled` or change thresholds; those stay with the DBA.
+   A superuser collector can do anything.
+
+The cost of keeping the roles is close to zero: they are NOLOGIN, have no password, own nothing, are
+created only if missing, and are shared by every database in the cluster.  The only visible effect is
+two extra rows in `pg_roles`.
+
+So: for production, create a LOGIN role, grant it `pgbackrest_monitor_collector`, and leave `postgres`
+out of it.  For a lab or a single-host test, `user=postgres` in the `dsn` is fine and you can skip the
+CREATE ROLE and GRANT steps.  Both work; only one of them is something I would sign off on.
+
 ### Remote instance sampling
 
 For `[instance:...]` connections (standbys) the collector needs only `CONNECT` and the default

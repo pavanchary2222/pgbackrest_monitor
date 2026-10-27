@@ -73,6 +73,10 @@ GRANT pgbackrest_monitor_reader TO monitoring_user;
 > log in; you create your own LOGIN role(s) and grant the group role to them, as shown above.
 > Because roles are cluster-wide, creating the extension in a second database reuses the existing roles,
 > and `DROP EXTENSION` leaves them in place (see "Uninstalling").
+>
+> Running the collector as `postgres` instead also works, since a superuser bypasses the grants, but I only
+> do that in a lab.  My reasons for keeping the dedicated roles are in `docs/SECURITY.md`, section
+> "Why two roles instead of just using `postgres`".
 
 Authentication for `pgbrmon_collector`: the collector runs as the `postgres` OS user, so the simplest
 is a `pg_hba.conf` line with peer authentication mapped to that role, or a password kept in

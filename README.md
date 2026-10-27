@@ -71,6 +71,7 @@ psql -d postgres -c "GRANT pgbackrest_monitor_reader TO grafana;"      # whoever
 #    Note: the NOLOGIN group roles pgbackrest_monitor_collector and pgbackrest_monitor_reader are
 #    created by CREATE EXTENSION itself (if missing in the cluster); you only create the LOGIN
 #    role and grant the group role to it.  DROP EXTENSION does not remove them.
+#    Using postgres directly also works (lab only); why I keep the roles: docs/SECURITY.md.
 
 # 3. collector
 sudo -e /etc/pgbackrest-monitor/collector.conf       # dsn + one [stanza:<name>] per stanza
